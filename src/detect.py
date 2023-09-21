@@ -10,6 +10,7 @@ from pathlib import Path
 import os
 import sys
 from rostopic import get_topic_type
+import message_filters
 
 from sensor_msgs.msg import Image, CompressedImage
 from detection_msgs.msg import BoundingBox, BoundingBoxes
@@ -76,6 +77,7 @@ class Yolov5Detector:
         
         # Initialize subscriber to Image/CompressedImage topic
         input_image_type, input_image_topic, _ = get_topic_type(rospy.get_param("~input_image_topic"), blocking = True)
+        input_depth_type, input_depth_topic, _ = get_topic_type(rospy.get_param("~input_depth_topic"), blocking = True)
         self.compressed_input = input_image_type == "sensor_msgs/CompressedImage"
 
         if self.compressed_input:
@@ -83,9 +85,10 @@ class Yolov5Detector:
                 input_image_topic, CompressedImage, self.callback, queue_size=1
             )
         else:
-            self.image_sub = rospy.Subscriber(
-                input_image_topic, Image, self.callback, queue_size=1
-            )
+            self.image_sub = message_filters.Subscriber(input_image_topic, Image)
+            self.depth_sub = message_filters.Subscriber(input_depth_topic, Image)
+            ts = message_filters.TimeSynchronizer([self.image_sub, self.depth_sub], 10)
+            ts.registerCallback(self.callback)
 
         # Initialize prediction publisher
         self.pred_pub = rospy.Publisher(
@@ -101,13 +104,15 @@ class Yolov5Detector:
         # Initialize CV_Bridge
         self.bridge = CvBridge()
 
-    def callback(self, data):
+    def callback(self,data, depth):
         """adapted from yolov5/detect.py"""
         # print(data.header)
         if self.compressed_input:
             im = self.bridge.compressed_imgmsg_to_cv2(data, desired_encoding="bgr8")
         else:
             im = self.bridge.imgmsg_to_cv2(data, desired_encoding="bgr8")
+            depth_img = self.bridge.imgmsg_to_cv2(depth, desired_encoding="passthrough")
+            
         
         im, im0 = self.preprocess(im)
         # print(im.shape)
@@ -151,6 +156,11 @@ class Yolov5Detector:
                 bounding_box.ymin = int(xyxy[1])
                 bounding_box.xmax = int(xyxy[2])
                 bounding_box.ymax = int(xyxy[3])
+                center_x = int((xyxy[0] + xyxy[2]) / 2)
+                center_y = int((xyxy[1] + xyxy[3]) / 2)
+                bounding_box.centerX = center_x
+                bounding_box.centerY = center_y
+                bounding_box.depth = depth_img[center_y][center_x]
 
                 bounding_boxes.bounding_boxes.append(bounding_box)
 
